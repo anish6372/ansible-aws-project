@@ -1,0 +1,14 @@
+plugin: amazon.aws.aws_ec2
+regions:
+  - us-east-1
+
+keyed_groups:
+  # Create groups from instance tags
+  # e.g., tag_Role_webserver -> webserver group
+  - key: tags.Role
+    prefix: tag_Role_
+    separator: ""
+
+# Set SSH connection to use public IP if available, otherwise private IP
+compose:
+  ansible_host: public_ip_address | default(private_ip_address)

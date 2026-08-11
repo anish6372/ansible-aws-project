@@ -1,0 +1,74 @@
+---
+- name: Install Node.js and NPM
+  ansible.builtin.apt:
+    name:
+      - nodejs
+      - npm
+    state: present
+    update_cache: yes
+
+- name: Create backend directory
+  ansible.builtin.file:
+    path: /opt/backend
+    state: directory
+    owner: ubuntu
+    group: ubuntu
+    mode: '0755'
+
+- name: Copy backend application files
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: /opt/backend/
+    owner: ubuntu
+    group: ubuntu
+    mode: '0644'
+  loop:
+    - package.json
+    - server.js
+  notify: restart backend
+
+- name: Install NPM dependencies
+  ansible.builtin.command: npm install --production
+  args:
+    chdir: /opt/backend
+  changed_when: false  # npm install is idempotent enough for our purposes
+
+- name: Get Database IP dynamically from inventory
+  ansible.builtin.set_fact:
+    db_ip: "{{ hostvars[groups['tag_Role_database'][0]]['ansible_host'] }}"
+  when: groups['tag_Role_database'] is defined and groups['tag_Role_database'] | length > 0
+  ignore_errors: true
+
+- name: Set database IP to DB server if dynamic lookup failed
+  ansible.builtin.set_fact:
+    db_ip: "32.192.224.27"
+  when: db_ip is not defined
+
+- name: Create backend systemd service
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/backend.service
+    content: |
+      [Unit]
+      Description=Node.js Backend API
+      After=network.target
+
+      [Service]
+      Type=simple
+      User=ubuntu
+      WorkingDirectory=/opt/backend
+      Environment=DB_HOST={{ db_ip | default('127.0.0.1') }}
+      Environment=DB_PASSWORD={{ db_password }}
+      ExecStart=/usr/bin/node server.js
+      Restart=on-failure
+      RestartSec=5
+
+      [Install]
+      WantedBy=multi-user.target
+  notify: restart backend
+
+- name: Start and enable backend service
+  ansible.builtin.systemd:
+    name: backend
+    state: started
+    enabled: yes
+    daemon_reload: yes

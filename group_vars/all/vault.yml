@@ -1,0 +1,7 @@
+# This file must be encrypted with ansible-vault before committing.
+# Run: ansible-vault encrypt group_vars/all/vault.yml
+#
+# To edit after encrypting: ansible-vault edit group_vars/all/vault.yml
+# To view:                   ansible-vault view group_vars/all/vault.yml
+---
+db_password: "{{ vault_db_password }}"

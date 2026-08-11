@@ -1,0 +1,25 @@
+---
+- name: Common Configuration and Monitoring
+  hosts: all
+  become: yes
+  roles:
+    - common
+    - monitoring
+
+- name: Configure Web Servers
+  hosts: tag_Role_webserver
+  become: yes
+  roles:
+    - webserver
+
+- name: Configure Backend Servers
+  hosts: tag_Role_backend
+  become: yes
+  roles:
+    - backend
+
+- name: Configure Database Servers
+  hosts: tag_Role_database
+  become: yes
+  roles:
+    - database
