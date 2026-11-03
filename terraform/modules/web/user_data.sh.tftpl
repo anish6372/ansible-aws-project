@@ -1,0 +1,29 @@
+#!/bin/bash
+# Boot-time configuration. Runs the same Ansible roles used for the dev server, locally.
+# Code revision: ${deploy_hash}
+set -euxo pipefail
+exec > >(tee /var/log/bootstrap.log) 2>&1
+export DEBIAN_FRONTEND=noninteractive
+
+apt-get update -y
+apt-get install -y python3-pip awscli xz-utils
+pip3 install --quiet "ansible-core<2.18"
+
+mkdir -p /opt/deploy
+aws s3 sync "s3://${bucket}/deploy" /opt/deploy --region ${region} --delete
+
+# Fetch the generated DB password with the instance role. It is written to a 0600 file, used once, then deleted.
+umask 077
+aws secretsmanager get-secret-value --secret-id "${secret_arn}" --region ${region} \
+  --query SecretString --output text > /root/db-secret.json
+python3 -c 'import json; print(json.dumps({"db_password": json.load(open("/root/db-secret.json"))["password"]}))' > /root/extra-vars.json
+rm -f /root/db-secret.json
+umask 022 # restore the default so files Ansible and npm create are readable by the service user
+
+cd /opt/deploy
+ansible-playbook -c local -i localhost, local.yml \
+  -e @/root/extra-vars.json \
+  -e db_mode=rds -e db_host=${db_host} -e db_name=${db_name}
+
+rm -f /root/extra-vars.json
+echo "bootstrap complete"

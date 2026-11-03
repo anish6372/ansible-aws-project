@@ -1,0 +1,12 @@
+# Cheap dev profile (default): about $8-10/month if left running, about $0.02/hour while testing.
+# Copy to terraform.tfvars (gitignored).
+
+# Only needed if you run Ansible over SSH. Otherwise leave these out and use SSM.
+# enable_ssh    = true
+# operator_cidr = "203.0.113.5/32"   # curl -s https://checkip.amazonaws.com  -> append /32
+# key_name      = "my-keypair"
+
+# Prod-like profile: use for a short demo then destroy (see docs/cost.md).
+# high_availability = true
+# enable_rds        = true
+# enable_nat        = true
