@@ -52,9 +52,11 @@ jobs:
         with:
           tflint_version: v0.54.0
       - name: tflint
+        env:
+          GITHUB_TOKEN: ${{ github.token }} # avoids anonymous rate limits when installing the AWS ruleset
         run: |
           tflint --chdir=terraform --recursive --init
-          tflint --chdir=terraform --recursive
+          tflint --chdir=terraform --recursive --minimum-failure-severity=error
 
   ansible:
     name: ansible-lint
@@ -80,7 +82,7 @@ jobs:
           fetch-depth: 0 # gitleaks scans history
 
       - name: Trivy - IaC misconfiguration (Terraform, Dockerfile)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: config
           scan-ref: .
@@ -90,7 +92,7 @@ jobs:
           format: table
 
       - name: Trivy - dependencies and secrets (filesystem)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: .
@@ -127,7 +129,7 @@ jobs:
           load: true
           tags: multitier-app:${{ github.sha }}
       - name: Trivy - scan image
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: multitier-app:${{ github.sha }}
           severity: HIGH,CRITICAL

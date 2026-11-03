@@ -17,6 +17,7 @@
     enabled: true
 
 - name: Create the application database role
+  become: true
   become_user: postgres
   community.postgresql.postgresql_user:
     name: "{{ db_user }}"

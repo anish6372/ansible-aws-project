@@ -44,8 +44,8 @@
     group: "{{ app_user }}"
     mode: "0640"
   loop: [package.json, package-lock.json]
-  register: app_manifest
-  notify: restart backend
+  register: backend_app_manifest
+  notify: Restart backend
 
 - name: Copy application source
   ansible.builtin.copy:
@@ -55,15 +55,15 @@
     group: "{{ app_user }}"
     mode: "0640"
     directory_mode: "0750"
-  notify: restart backend
+  notify: Restart backend
 
-- name: Install production dependencies from the lockfile
+- name: Install production dependencies from the lockfile # noqa: no-handler (must finish before the restart handler runs)
   ansible.builtin.command: npm ci --omit=dev
   args:
     chdir: "{{ app_dir }}"
   environment:
     PATH: "/usr/local/bin:/usr/bin:/bin"
-  when: app_manifest is changed
+  when: backend_app_manifest is changed
   changed_when: true
 
 - name: Make dependencies readable by the service user (independent of the caller's umask)
@@ -102,7 +102,7 @@
       NODE_EXTRA_CA_CERTS=/etc/rds-ca-bundle.pem
       {% endif %}
   no_log: true
-  notify: restart backend
+  notify: Restart backend
 
 - name: Create backend systemd service
   ansible.builtin.copy:
@@ -130,7 +130,7 @@
 
       [Install]
       WantedBy=multi-user.target
-  notify: restart backend
+  notify: Restart backend
 
 - name: Start and enable backend service
   ansible.builtin.systemd:
