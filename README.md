@@ -1,275 +1,131 @@
-# Ansible AWS Multi-Tier Project
+# Multi-tier app on AWS with Terraform and Ansible
 
-A complete Infrastructure as Code (IaC) solution using Terraform and Ansible to deploy a multi-tier web application on AWS.
+I built this to practise doing infrastructure properly instead of clicking through the console. It deploys a small
+Node.js + PostgreSQL app in two shapes:
 
-## 🏗️ Architecture
+- **dev**: one EC2 instance running nginx, the Node API and a local Postgres. About $0.02/hour.
+- **prod**: an Application Load Balancer, an Auto Scaling group across two AZs and a private RDS PostgreSQL
+  instance, with CloudWatch alarms and a dashboard. About $0.11/hour, so I apply it, check it, and destroy it.
+
+Terraform builds the infrastructure, Ansible configures the servers, and GitHub Actions runs lint and security
+checks on every push.
+
+## What it looks like
+
+![Targets healthy behind the ALB](docs/screenshots/01-alb-targets-healthy.png)
+
+The prod stack after a fresh apply: both targets healthy, one per AZ.
+
+More screenshots are in [docs/screenshots](docs/screenshots): the CloudWatch dashboard, the RDS settings, the
+security groups, the Auto Scaling group and the Terraform state.
+
+## Architecture (prod)
 
 ```
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   Web Server    │    │  Backend/API    │    │   Database      │
-│     (Nginx)     │────│   (Node.js)     │────│  (PostgreSQL)   │
-│                 │    │                 │    │                 │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
-        │                        │                        │
-        └────────────────────────┼────────────────────────┘
-                                 │
-                    ┌─────────────────┐
-                    │   Monitoring    │
-                    │ (Node Exporter) │
-                    └─────────────────┘
+                    Internet
+                       |  :80
+                 +-----v------+
+                 |    ALB     |   public subnets, 2 AZs
+                 +-----+------+
+          +------------+-------------+
+          |                          |
+   +------v------+            +------v------+
+   |  EC2  (AZ a)|            |  EC2  (AZ b)|     Auto Scaling group, min 2 / max 3
+   |  nginx:80   |            |  nginx:80   |     CPU target tracking, rolling refresh
+   |  node:3000  |            |  node:3000  |
+   +------+------+            +------+------+
+          |  5432, app SG only       |
+          +------------+-------------+
+                       |
+              +--------v---------+
+              |  RDS PostgreSQL  |   private subnets, encrypted, not public
+              |  password in     |
+              |  Secrets Manager |
+              +------------------+
 ```
 
-## 📋 Components
+How the pieces fit:
 
-- **Terraform**: Infrastructure provisioning (VPC, EC2 instances, Security Groups)
-- **Ansible**: Configuration management and application deployment
-- **Nginx**: Web server and reverse proxy
-- **Node.js**: Backend API server
-- **PostgreSQL**: Database
-- **Prometheus Node Exporter**: System monitoring
+- The app instances boot from a launch template. `user_data` pulls the repo from S3, fetches the database
+  password from Secrets Manager using the instance role, and runs the same Ansible roles I use for dev
+  (`local.yml`, connection `local`). So there is one set of roles for both environments.
+- The ALB health-checks `/health`. The app also has `/api/status`, which actually queries the database, so a
+  database problem shows up there without making the load balancer kill healthy instances.
+- No SSH. I get a shell with SSM Session Manager.
+- There is no NAT gateway. It would cost about $32 a month, which is too much for my budget, so the instances sit
+  in public subnets and their security group only accepts traffic from the ALB. The trade-off is written up in
+  [docs/architecture.md](docs/architecture.md).
 
-## 🚀 Quick Start
+## Repo layout
 
-### Prerequisites
+```
+app/                   Node API, tests, Dockerfile
+terraform/bootstrap/   S3 state bucket and the GitHub OIDC role (applied once, by hand)
+terraform/modules/     network, compute, database, web (ALB + ASG), observability
+terraform/envs/dev/    single instance
+terraform/envs/prod/   ALB + ASG + RDS + alarms
+roles/, site.yml       Ansible roles; site.yml targets the dev instance over SSH
+local.yml              same roles, run on the instance itself at boot (prod)
+docs/                  architecture notes, cost notes, screenshots
+```
 
-1. **AWS Account** with appropriate permissions
-2. **Terraform** >= 1.0
-3. **Ansible** >= 2.9
-4. **AWS CLI** configured with credentials
-5. **SSH Key Pair** for EC2 access
+## Running it
 
-### Deployment Steps
+You need the AWS CLI configured, Terraform 1.10 or newer, Node 20+, and Ansible on Linux, macOS or WSL (only
+needed for dev).
 
-#### 1. Clone and Setup
 ```bash
-git clone <this-repo>
-cd ansible-aws-project
-```
+# app tests
+cd app && npm ci && npm test && cd ..
 
-#### 2. Configure Variables
-Update `terraform/variables.tf` with your settings:
-```hcl
-variable "operator_cidr" {
-  description = "Your IP in CIDR notation"
-  default     = "YOUR_IP/32"  # Change this to your actual IP
-}
+# one-time: state bucket and the CI role
+terraform -chdir=terraform/bootstrap init
+terraform -chdir=terraform/bootstrap apply -var github_repo=<owner>/<repo>
 
-variable "key_name" {
-  description = "SSH key pair name"
-  default     = "your-key-name"  # Change this to your AWS key pair
-}
-```
-
-#### 3. Deploy Infrastructure
-```bash
-cd terraform
-terraform init
-terraform plan
+# prod
+cd terraform/envs/prod
+cp backend.hcl.example backend.hcl      # put the bucket name in it
+terraform init -backend-config=backend.hcl
 terraform apply
+curl "$(terraform output -raw app_url)/api/status"
+
+# when you are done looking at it
+terraform destroy
 ```
 
-#### 4. Configure Ansible Inventory
-The project uses dynamic AWS EC2 inventory. Ensure AWS credentials are configured:
-```bash
-export AWS_ACCESS_KEY_ID=your_access_key
-export AWS_SECRET_ACCESS_KEY=your_secret_key
-export AWS_DEFAULT_REGION=us-east-1
-```
+The dev environment works the same way from `terraform/envs/dev`, then run
+`ansible-playbook site.yml` once SSH is enabled for your IP (`enable_ssh` and `operator_cidr` in
+`terraform.tfvars`). RDS is the slow part of a prod apply.
 
-#### 5. Deploy Application Stack
-```bash
-cd ..
-ansible-playbook -i inventory/aws_ec2.yml site.yml
-```
+## CI
 
-#### 6. Test Deployment
-```bash
-# Get web server IP from terraform output
-cd terraform
-WEB_IP=$(terraform output -raw web_instance_public_ip)
+- `ci.yml` runs on every push and PR: app tests and `npm audit`, `terraform fmt` and `validate`, tflint,
+  ansible-lint, Trivy (config and filesystem), Checkov, Gitleaks, and a Docker build with a Trivy image scan.
+- `terraform-plan.yml` runs `terraform plan` on PRs that touch `terraform/`, authenticating to AWS through
+  GitHub OIDC with a read-only role, and posts the plan as a comment. Infracost is optional.
+- CI never applies anything. I apply by hand, which keeps the blast radius and the bill small.
 
-# Test the application
-curl http://$WEB_IP
-curl http://$WEB_IP/api/status
-```
+For the plan job, set two repository variables from the bootstrap output: `AWS_ROLE_ARN` and `TF_STATE_BUCKET`.
 
-## 🐛 Troubleshooting
+## Things I ran into
 
-### Common Issues
+These are the bugs that actually cost me time, in case they help someone:
 
-#### 1. Backend Connectivity Issues
-If you see "connecting to backend" errors:
+- **`umask` in user_data.** I set `umask 077` while writing the DB secret to a file, and forgot to put it back.
+  `npm ci` then created `node_modules` readable only by root, so the service user could not load any module and
+  the app crashed. nginx answered 502, the targets went unhealthy and the instance refresh got stuck. The fix is
+  `umask 022` after the secret is used, plus an Ansible task that sets permissions explicitly.
+- **Free-tier RDS** rejects a backup retention above 1 day. It is a variable now, defaulting to 1 for prod.
+- **A dropped connection during `apply`** left RDS created but missing from state. I recovered it by
+  force-unlocking the stale lock, pushing the saved `errored.tfstate`, and untainting the instance.
+- **Ubuntu 22.04's `nodejs` package is v12**, so the backend role installs the official tarball and checks its
+  SHA-256.
 
-1. **Run the debug script:**
-```bash
-chmod +x debug_backend.sh
-./debug_backend.sh
-```
+## Known gaps
 
-2. **Use the automated fix:**
-```bash
-ansible-playbook -i inventory/aws_ec2.yml fix_backend_connectivity.yml
-```
+- HTTP only for now. The Terraform for HTTPS (ACM, Route 53, redirect) is there, behind `domain_name` and
+  `hosted_zone_id`, but I have not applied it because I do not own a domain for this.
+- The CI workflows are written but I have not seen a green run yet.
+- No automated deploy. A change to the app means `terraform apply`, which rolls the instances.
 
-#### 2. AWS Resource Limits
-If you encounter vCPU limit errors:
-- Check current usage: `aws ec2 describe-instances`
-- Stop unused instances to free up capacity
-- Request limit increase from AWS Support
-- Use alternative configuration in `terraform/main.tf`
-
-#### 3. Hard-coded IP Issues
-The project includes fallback IPs that may need updating:
-- Check `roles/webserver/tasks/main.yml`
-- Check `roles/backend/tasks/main.yml`
-- Update with current infrastructure IPs from `terraform output`
-
-### Debug Tools
-
-#### Debug Script
-```bash
-./debug_backend.sh
-```
-Provides comprehensive system diagnostics including:
-- Infrastructure IP addresses
-- Service connectivity tests
-- Configuration validation
-- Recommended fixes
-
-#### Fix Playbook
-```bash
-ansible-playbook -i inventory/aws_ec2.yml fix_backend_connectivity.yml
-```
-Automatically:
-- Updates hard-coded IP addresses
-- Restarts services
-- Tests connectivity
-- Provides detailed status reports
-
-## 📁 Project Structure
-
-```
-ansible-aws-project/
-├── terraform/                 # Infrastructure as Code
-│   ├── main.tf               # Main Terraform configuration
-│   ├── variables.tf          # Variable definitions
-│   ├── outputs.tf            # Output definitions
-│   └── ssh-key.tf           # SSH key pair creation
-├── roles/                    # Ansible roles
-│   ├── common/              # Common server setup
-│   ├── webserver/           # Nginx configuration
-│   ├── backend/             # Node.js API setup
-│   ├── database/            # PostgreSQL setup
-│   └── monitoring/          # Node Exporter setup
-├── inventory/               # Ansible inventory
-│   └── aws_ec2.yml         # Dynamic AWS inventory
-├── group_vars/             # Ansible group variables
-│   └── all/
-│       ├── vault.yml       # Encrypted variables
-│       └── vault_secrets.yml
-├── .github/workflows/      # GitHub Actions
-│   └── ansible.yml         # CI/CD pipeline
-├── debug_backend.sh        # Debugging script
-├── fix_backend_connectivity.yml  # Fix automation
-├── SOLUTION.md            # Detailed troubleshooting guide
-└── site.yml               # Main Ansible playbook
-```
-
-## 🔧 Configuration Files
-
-### Key Configuration Points
-
-#### Security Groups (terraform/main.tf)
-- Web server: Ports 80, 443 (public), 22 (restricted)
-- Backend: Port 3000 (from web server only), 22 (restricted)
-- Database: Port 5432 (from backend only), 22 (restricted)
-
-#### Service Flow
-1. **User** → **Nginx** (port 80/443)
-2. **Nginx** → **Node.js Backend** (port 3000, internal)
-3. **Backend** → **PostgreSQL** (port 5432, internal)
-
-#### Application Endpoints
-- `/` - Static web content
-- `/api/status` - Backend health check
-- `/api/*` - API endpoints (proxied to backend)
-
-## 📊 Monitoring
-
-### Node Exporter Metrics
-Available on port 9100 (VPC internal only):
-- System metrics (CPU, memory, disk)
-- Network statistics
-- Process information
-
-### Service Status Commands
-```bash
-# Check service status on servers
-sudo systemctl status nginx
-sudo systemctl status backend
-sudo systemctl status postgresql
-sudo systemctl status node_exporter
-
-# View logs
-sudo journalctl -u backend -f
-sudo tail -f /var/log/nginx/error.log
-```
-
-## 🔒 Security
-
-### Network Security
-- VPC with public and private subnets
-- Security groups with least privilege access
-- SSH access restricted to operator IP only
-- Database and backend not directly accessible from internet
-
-### Secrets Management
-- Ansible Vault for sensitive variables
-- SSH keys generated automatically by Terraform
-- Database credentials stored in encrypted vault files
-
-## 🚀 GitHub Actions CI/CD
-
-The project includes a GitHub Actions workflow (`.github/workflows/ansible.yml`) that:
-- Validates Ansible playbooks
-- Runs syntax checks
-- Tests role dependencies
-- Provides automated deployment capabilities
-
-## 📝 Additional Resources
-
-- [Detailed Troubleshooting Guide](SOLUTION.md)
-- [Terraform AWS Provider Documentation](https://registry.terraform.io/providers/hashicorp/aws/latest/docs)
-- [Ansible AWS Collections](https://docs.ansible.com/ansible/latest/collections/amazon/aws/)
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Test thoroughly
-5. Submit a pull request
-
-## 📄 License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## ⚠️ Important Notes
-
-1. **AWS Costs**: This project creates AWS resources that may incur charges
-2. **Security**: Update default IPs and credentials before production use
-3. **Monitoring**: Check AWS CloudWatch for additional monitoring capabilities
-4. **Backups**: Implement database backup strategy for production environments
-
-## 🆘 Support
-
-If you encounter issues:
-
-1. Run the debug script: `./debug_backend.sh`
-2. Check the [troubleshooting guide](SOLUTION.md)
-3. Review service logs on the servers
-4. Create an issue in this repository with:
-   - Error messages
-   - Debug script output
-   - Terraform and Ansible versions
-   - AWS region and instance types used
+More detail: [docs/architecture.md](docs/architecture.md) and [docs/cost.md](docs/cost.md).
