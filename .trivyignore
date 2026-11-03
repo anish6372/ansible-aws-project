@@ -1,0 +1,26 @@
+# Each ignore needs a reason. Keep this list short.
+
+# AVD-AWS-0107 / AVD-AWS-0104: the web security group intentionally allows 80/443 from the internet
+# (it is a public website) and egress to 80/443 for package repos. SSH is closed by default.
+AVD-AWS-0107
+AVD-AWS-0104
+
+# AVD-AWS-0178: VPC flow logs are optional (enable_flow_logs) to avoid CloudWatch cost on a dev budget.
+AVD-AWS-0178
+
+# AWS-0132: the Terraform state bucket uses SSE-S3 (AES256) rather than a customer-managed KMS key.
+# A CMK is about $1/month and adds little for a single-owner state bucket; revisit for a team setup.
+AWS-0132
+
+# AWS-0053: the ALB is internet-facing on purpose; it is the public entry point of the site.
+AWS-0053
+# AWS-0054: port 80 forwards plain HTTP only when no domain is configured (ACM cannot issue a
+# certificate without one). With domain_name set, port 80 only redirects to HTTPS.
+AWS-0054
+# AWS-0095: the alarm topic is unencrypted because CloudWatch cannot publish to a topic that uses the
+# AWS-managed SNS key, and a customer-managed key costs extra.
+AWS-0095
+
+# AWS-0177: RDS deletion protection is off so a budget demo can be torn down with `terraform destroy`.
+# Turn it on (deletion_protection = true) for any environment that holds real data.
+AWS-0177
