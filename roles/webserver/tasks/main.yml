@@ -1,99 +1,60 @@
 ---
 - name: Install Nginx
   ansible.builtin.apt:
+    lock_timeout: 300
     name: nginx
     state: present
 
-- name: Start and enable Nginx service
-  ansible.builtin.service:
-    name: nginx
-    state: started
-    enabled: yes
+- name: Deploy landing page
+  ansible.builtin.copy:
+    src: index.html
+    dest: /var/www/html/index.html
+    owner: root
+    group: root
+    mode: "0644"
 
-- name: Get Backend IP dynamically from inventory
-  set_fact:
-    backend_ip: "{{ hostvars[groups['tag_Role_backend'][0]]['ansible_host'] }}"
-  when: groups['tag_Role_backend'] is defined and groups['tag_Role_backend'] | length > 0
-  ignore_errors: true
-
-- name: Set backend IP to app server if dynamic lookup failed
-  set_fact:
-    backend_ip: "34.232.109.46"
-  when: backend_ip is not defined
-
-- name: Configure Nginx reverse proxy
+- name: Configure Nginx reverse proxy to the local backend
   ansible.builtin.copy:
     dest: /etc/nginx/sites-available/default
+    owner: root
+    group: root
+    mode: "0644"
     content: |
+      server_tokens off;
+
       server {
           listen 80 default_server;
           listen [::]:80 default_server;
+          server_name _;
+
+          add_header X-Content-Type-Options nosniff always;
+          add_header X-Frame-Options DENY always;
+          add_header Referrer-Policy no-referrer always;
 
           root /var/www/html;
-          index index.html index.htm index.nginx-debian.html;
-
-          server_name _;
+          index index.html;
 
           location / {
               try_files $uri $uri/ =404;
           }
 
+          location = /health {
+              proxy_pass http://127.0.0.1:{{ app_port }}/health;
+          }
+
           location /api/ {
-              proxy_pass http://{{ backend_ip | default('127.0.0.1') }}:3000/api/;
+              proxy_pass http://127.0.0.1:{{ app_port }}/api/;
               proxy_http_version 1.1;
-              proxy_set_header Upgrade $http_upgrade;
-              proxy_set_header Connection 'upgrade';
               proxy_set_header Host $host;
-              proxy_cache_bypass $http_upgrade;
+              proxy_set_header X-Real-IP $remote_addr;
+              proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+              proxy_read_timeout 10s;
           }
       }
   notify: restart nginx
 
-- name: Deploy custom index.html with API integration
-  ansible.builtin.copy:
-    dest: /var/www/html/index.html
-    content: |
-      <!DOCTYPE html>
-      <html>
-      <head>
-          <title>Industry Ready Ansible Deployment</title>
-          <style>
-              body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f7f6; color: #333; text-align: center; padding-top: 50px; }
-              .container { background-color: white; padding: 40px; border-radius: 10px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); display: inline-block; max-width: 600px; }
-              h1 { color: #E3000F; } /* Ansible Red */
-              .success { color: #28a745; font-weight: bold; }
-              .status-box { margin-top: 20px; padding: 15px; background: #e9ecef; border-radius: 5px; text-align: left; }
-          </style>
-      </head>
-      <body>
-          <div class="container">
-              <h1>Multi-Tier Architecture Successful</h1>
-              <p>This web server was configured automatically using an <strong>Industry-Standard Ansible Role</strong> architecture.</p>
-              
-              <div class="status-box">
-                  <h3>Backend & Database Status</h3>
-                  <p id="db-status">Checking connection...</p>
-                  <p id="db-time"></p>
-              </div>
-          </div>
-          
-          <script>
-              fetch('/api/status')
-                  .then(response => response.json())
-                  .then(data => {
-                      const statusEl = document.getElementById('db-status');
-                      if (data.databaseConnected) {
-                          statusEl.innerHTML = 'Database Connection: <span class="success">Connected!</span>';
-                          document.getElementById('db-time').innerText = 'Database Time: ' + new Date(data.serverTime).toLocaleString();
-                      } else {
-                          statusEl.innerHTML = 'Database Connection: <span style="color:red">Failed</span>';
-                          document.getElementById('db-time').innerText = 'Error: ' + data.error;
-                      }
-                  })
-                  .catch(err => {
-                      document.getElementById('db-status').innerHTML = 'Backend Connection: <span style="color:red">Failed (API unreachable)</span>';
-                  });
-          </script>
-      </body>
-      </html>
-  notify: restart nginx
+- name: Start and enable Nginx
+  ansible.builtin.service:
+    name: nginx
+    state: started
+    enabled: true

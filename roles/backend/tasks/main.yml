@@ -1,52 +1,115 @@
 ---
-- name: Install Node.js and NPM
-  ansible.builtin.apt:
-    name:
-      - nodejs
-      - npm
-    state: present
-    update_cache: yes
+# Ubuntu 22.04's apt nodejs is v12, far too old, so install the official tarball (checksum pinned).
+- name: Download Node.js (checksum verified)
+  ansible.builtin.get_url:
+    url: "https://nodejs.org/dist/v{{ node_version }}/node-v{{ node_version }}-linux-x64.tar.xz"
+    dest: "/tmp/node-v{{ node_version }}.tar.xz"
+    checksum: "sha256:{{ node_sha256 }}"
+    mode: "0644"
 
-- name: Create backend directory
+- name: Install Node.js under /opt
+  ansible.builtin.unarchive:
+    src: "/tmp/node-v{{ node_version }}.tar.xz"
+    dest: /opt
+    remote_src: true
+    creates: "/opt/node-v{{ node_version }}-linux-x64/bin/node"
+
+- name: Link node, npm and npx into PATH
   ansible.builtin.file:
-    path: /opt/backend
-    state: directory
-    owner: ubuntu
-    group: ubuntu
-    mode: '0755'
+    src: "/opt/node-v{{ node_version }}-linux-x64/bin/{{ item }}"
+    dest: "/usr/local/bin/{{ item }}"
+    state: link
+  loop: [node, npm, npx]
 
-- name: Copy backend application files
+- name: Create unprivileged service user
+  ansible.builtin.user:
+    name: "{{ app_user }}"
+    system: true
+    shell: /usr/sbin/nologin
+    create_home: false
+
+- name: Create application directory
+  ansible.builtin.file:
+    path: "{{ app_dir }}"
+    state: directory
+    owner: root
+    group: "{{ app_user }}"
+    mode: "0750"
+
+- name: Copy application manifest
   ansible.builtin.copy:
-    src: "{{ item }}"
-    dest: /opt/backend/
-    owner: ubuntu
-    group: ubuntu
-    mode: '0644'
-  loop:
-    - package.json
-    - server.js
+    src: "{{ playbook_dir }}/app/{{ item }}"
+    dest: "{{ app_dir }}/{{ item }}"
+    owner: root
+    group: "{{ app_user }}"
+    mode: "0640"
+  loop: [package.json, package-lock.json]
+  register: app_manifest
   notify: restart backend
 
-- name: Install NPM dependencies
-  ansible.builtin.command: npm install --production
+- name: Copy application source
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/app/src/"
+    dest: "{{ app_dir }}/src/"
+    owner: root
+    group: "{{ app_user }}"
+    mode: "0640"
+    directory_mode: "0750"
+  notify: restart backend
+
+- name: Install production dependencies from the lockfile
+  ansible.builtin.command: npm ci --omit=dev
   args:
-    chdir: /opt/backend
-  changed_when: false  # npm install is idempotent enough for our purposes
+    chdir: "{{ app_dir }}"
+  environment:
+    PATH: "/usr/local/bin:/usr/bin:/bin"
+  when: app_manifest is changed
+  changed_when: true
 
-- name: Get Database IP dynamically from inventory
-  ansible.builtin.set_fact:
-    db_ip: "{{ hostvars[groups['tag_Role_database'][0]]['ansible_host'] }}"
-  when: groups['tag_Role_database'] is defined and groups['tag_Role_database'] | length > 0
-  ignore_errors: true
+- name: Make dependencies readable by the service user (independent of the caller's umask)
+  ansible.builtin.file:
+    path: "{{ app_dir }}/node_modules"
+    state: directory
+    recurse: true
+    owner: root
+    group: "{{ app_user }}"
+    mode: "u=rwX,g=rX,o="
 
-- name: Set database IP to DB server if dynamic lookup failed
-  ansible.builtin.set_fact:
-    db_ip: "32.192.224.27"
-  when: db_ip is not defined
+- name: Trust the Amazon RDS certificate authority bundle
+  ansible.builtin.get_url:
+    url: https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
+    dest: /etc/rds-ca-bundle.pem
+    owner: root
+    group: root
+    mode: "0644"
+  when: db_mode == 'rds'
+
+- name: Write service environment file (secrets are not placed in the world-readable unit file)
+  ansible.builtin.copy:
+    dest: /etc/backend.env
+    owner: root
+    group: root
+    mode: "0600"
+    content: |
+      HOST=127.0.0.1
+      PORT={{ app_port }}
+      DB_HOST={{ db_host }}
+      DB_NAME={{ db_name }}
+      DB_USER={{ db_user }}
+      DB_PASSWORD={{ db_password }}
+      DB_SSL={{ 'true' if db_mode == 'rds' else 'false' }}
+      {% if db_mode == 'rds' %}
+      NODE_EXTRA_CA_CERTS=/etc/rds-ca-bundle.pem
+      {% endif %}
+  no_log: true
+  notify: restart backend
 
 - name: Create backend systemd service
   ansible.builtin.copy:
     dest: /etc/systemd/system/backend.service
+    owner: root
+    group: root
+    mode: "0644"
     content: |
       [Unit]
       Description=Node.js Backend API
@@ -54,13 +117,16 @@
 
       [Service]
       Type=simple
-      User=ubuntu
-      WorkingDirectory=/opt/backend
-      Environment=DB_HOST={{ db_ip | default('127.0.0.1') }}
-      Environment=DB_PASSWORD={{ db_password }}
-      ExecStart=/usr/bin/node server.js
+      User={{ app_user }}
+      WorkingDirectory={{ app_dir }}
+      EnvironmentFile=/etc/backend.env
+      ExecStart=/usr/local/bin/node src/server.js
       Restart=on-failure
       RestartSec=5
+      NoNewPrivileges=true
+      ProtectSystem=strict
+      ProtectHome=true
+      PrivateTmp=true
 
       [Install]
       WantedBy=multi-user.target
@@ -70,5 +136,5 @@
   ansible.builtin.systemd:
     name: backend
     state: started
-    enabled: yes
-    daemon_reload: yes
+    enabled: true
+    daemon_reload: true

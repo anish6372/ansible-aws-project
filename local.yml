@@ -1,0 +1,13 @@
+---
+# Applied by each Auto Scaling Group instance at boot (see terraform/modules/web/user_data.sh.tftpl).
+# Same roles as site.yml, but run locally and against RDS instead of an on-host database.
+# db_password, db_host, db_name and db_mode=rds are passed in as extra vars by the bootstrap script.
+- name: Configure this instance
+  hosts: localhost
+  connection: local
+  become: true
+  roles:
+    - common
+    - monitoring
+    - backend
+    - webserver

@@ -1,56 +1,27 @@
 ---
-- name: Install PostgreSQL and dependencies
+# Local PostgreSQL for the cheap dev profile. It listens on loopback only (Ubuntu's default),
+# so there is no network exposure and no pg_hba changes are needed.
+- name: Install PostgreSQL and the Python driver Ansible needs
   ansible.builtin.apt:
+    lock_timeout: 300
     name:
       - postgresql
-      - postgresql-contrib
       - python3-psycopg2
+      - acl # lets Ansible become the unprivileged postgres user
     state: present
-    update_cache: yes
 
-- name: Start and enable PostgreSQL service
+- name: Start and enable PostgreSQL
   ansible.builtin.service:
     name: postgresql
     state: started
-    enabled: yes
+    enabled: true
 
-- name: Create PostgreSQL database user
+- name: Create the application database role
   become_user: postgres
   community.postgresql.postgresql_user:
-    name: "db_admin"
+    name: "{{ db_user }}"
     password: "{{ db_password }}"
+    encrypted: true
     role_attr_flags: CREATEDB
     state: present
-
-- name: Find the active postgresql.conf path
-  ansible.builtin.find:
-    paths: /etc/postgresql
-    patterns: postgresql.conf
-    recurse: yes
-  register: pg_conf_files
-
-- name: Set listen_addresses to accept VPC connections
-  ansible.builtin.lineinfile:
-    path: "{{ pg_conf_files.files[0].path }}"
-    regexp: '^#?listen_addresses\s*='
-    line: "listen_addresses = '*'"
-    state: present
-  notify: restart postgresql
-
-- name: Find the active pg_hba.conf path
-  ansible.builtin.find:
-    paths: /etc/postgresql
-    patterns: pg_hba.conf
-    recurse: yes
-  register: pg_hba_files
-
-- name: Allow md5 authentication from VPC CIDR
-  community.postgresql.postgresql_pg_hba:
-    dest: "{{ pg_hba_files.files[0].path }}"
-    contype: host
-    databases: all
-    users: all
-    source: "10.0.0.0/16"
-    method: md5
-    state: present
-  notify: restart postgresql
+  no_log: true

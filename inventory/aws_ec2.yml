@@ -5,7 +5,7 @@ regions:
 keyed_groups:
   # Create groups from instance tags
   # e.g., tag_Role_webserver -> webserver group
-  - key: tags.Role
+  - key: ec2_tags.Role
     prefix: tag_Role_
     separator: ""
 

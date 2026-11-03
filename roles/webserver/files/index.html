@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Multi-Tier AWS Demo</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 40rem; margin: 3rem auto; padding: 0 1rem; line-height: 1.5; }
+    code, pre { background: #f2f2f2; padding: .1rem .3rem; border-radius: 4px; }
+    pre { padding: .8rem; overflow-x: auto; }
+    .ok { color: #137333; } .bad { color: #b3261e; }
+  </style>
+</head>
+<body>
+  <h1>Multi-Tier AWS Demo</h1>
+  <p>Terraform + Ansible + DevSecOps CI. nginx &rarr; Node.js API &rarr; PostgreSQL.</p>
+  <p>API status: <strong id="s">checking&hellip;</strong></p>
+  <pre id="out"></pre>
+  <script>
+    fetch('/api/status').then(r => r.json().then(j => ({ ok: r.ok, j }))).then(({ ok, j }) => {
+      const s = document.getElementById('s');
+      s.textContent = ok ? 'healthy, database connected' : 'degraded';
+      s.className = ok ? 'ok' : 'bad';
+      document.getElementById('out').textContent = JSON.stringify(j, null, 2);
+    }).catch(() => { const s = document.getElementById('s'); s.textContent = 'unreachable'; s.className = 'bad'; });
+  </script>
+</body>
+</html>

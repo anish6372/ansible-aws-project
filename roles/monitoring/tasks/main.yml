@@ -1,36 +1,55 @@
 ---
-- name: Download Prometheus Node Exporter
+- name: Download Prometheus Node Exporter (checksum verified)
+  ansible.builtin.get_url:
+    url: "https://github.com/prometheus/node_exporter/releases/download/v{{ node_exporter_version }}/node_exporter-{{ node_exporter_version }}.linux-amd64.tar.gz"
+    dest: "/tmp/node_exporter-{{ node_exporter_version }}.tar.gz"
+    checksum: "sha256:{{ node_exporter_sha256 }}"
+    mode: "0644"
+
+- name: Unpack Node Exporter
   ansible.builtin.unarchive:
-    src: https://github.com/prometheus/node_exporter/releases/download/v1.7.0/node_exporter-1.7.0.linux-amd64.tar.gz
+    src: "/tmp/node_exporter-{{ node_exporter_version }}.tar.gz"
     dest: /tmp/
-    remote_src: yes
+    remote_src: true
+    creates: "/tmp/node_exporter-{{ node_exporter_version }}.linux-amd64/node_exporter"
 
-- name: Copy Node Exporter binary
+- name: Install Node Exporter binary
   ansible.builtin.copy:
-    src: /tmp/node_exporter-1.7.0.linux-amd64/node_exporter
+    src: "/tmp/node_exporter-{{ node_exporter_version }}.linux-amd64/node_exporter"
     dest: /usr/local/bin/node_exporter
-    mode: '0755'
-    remote_src: yes
+    owner: root
+    group: root
+    mode: "0755"
+    remote_src: true
+  notify: restart node_exporter
 
-- name: Create node_exporter service file
+- name: Create node_exporter service
   ansible.builtin.copy:
     dest: /etc/systemd/system/node_exporter.service
+    owner: root
+    group: root
+    mode: "0644"
     content: |
       [Unit]
-      Description=Node Exporter
+      Description=Prometheus Node Exporter
       Wants=network-online.target
       After=network-online.target
-      
+
       [Service]
       User=nobody
-      ExecStart=/usr/local/bin/node_exporter
-      
+      # Loopback only: scrape it through an SSH/SSM tunnel or a local Prometheus agent.
+      ExecStart=/usr/local/bin/node_exporter --web.listen-address=127.0.0.1:9100
+      NoNewPrivileges=true
+      ProtectSystem=strict
+      ProtectHome=true
+
       [Install]
-      WantedBy=default.target
+      WantedBy=multi-user.target
   notify: restart node_exporter
 
 - name: Start and enable node_exporter
-  ansible.builtin.service:
+  ansible.builtin.systemd:
     name: node_exporter
     state: started
-    enabled: yes
+    enabled: true
+    daemon_reload: true

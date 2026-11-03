@@ -1,0 +1,24 @@
+---
+# Non-secret defaults. Secrets live in group_vars/all/vault_secrets.yml (ansible-vault encrypted,
+# gitignored). Create it with:
+#   ansible-vault create group_vars/all/vault_secrets.yml
+# containing a single line:
+#   vault_db_password: "<strong password>"
+db_password: "{{ vault_db_password }}"
+
+# "local" = PostgreSQL on the app host (cheap dev profile)
+# "rds"   = managed database; set db_host to the Terraform `rds_endpoint` output
+db_mode: local
+db_host: 127.0.0.1
+db_name: postgres
+db_user: db_admin
+
+app_user: appsvc
+app_dir: /opt/backend
+app_port: 3000
+
+node_version: "22.21.0"
+node_sha256: "71a04f4b9144870c9407b8019fe912514229e50246bc706862eded3ac8e9025d"
+
+node_exporter_version: "1.8.2"
+node_exporter_sha256: "6809dd0b3ec45fd6e992c19071d6b5253aed3ead7bf0686885a51d85c6643c66"
